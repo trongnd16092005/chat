@@ -8,21 +8,18 @@ import javafx.scene.control.TabPane;
 import javafx.scene.control.TextArea;
 import javafx.scene.control.TextField;
 
-import javax.xml.bind.JAXBContext;
-import javax.xml.bind.JAXBException;
-import javax.xml.bind.Marshaller;
-import javax.xml.bind.Unmarshaller;
+import javax.xml.bind.*;
 import java.io.*;
 import java.net.ServerSocket;
 import java.net.Socket;
+import java.nio.charset.StandardCharsets;
+import java.sql.Connection;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
 import java.time.LocalDateTime;
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 
 public class ManagerController {
-
     @FXML
     private TabPane tabPane;
     @FXML
@@ -32,9 +29,9 @@ public class ManagerController {
 
     private ServerSocket serverSocket;
     private Thread serverThread;
-    private Map<String, BufferedWriter> clientWriters = new HashMap<>();
-    private Map<String, TextArea> clientTextAreas = new HashMap<>();
-    private List<Message> messageHistory = new ArrayList<>();
+    private final Map<String, BufferedWriter> clientWriters = Collections.synchronizedMap(new HashMap<>());
+    private final Map<String, TextArea> clientTextAreas = Collections.synchronizedMap(new HashMap<>());
+    private final List<Message> messageHistory = Collections.synchronizedList(new ArrayList<>());
     private final String chatHistoryFile = "chat.xml";
 
     @FXML
@@ -50,78 +47,150 @@ public class ManagerController {
         serverThread = new Thread(() -> {
             try {
                 serverSocket = new ServerSocket(12345);
+                System.out.println("Server started on port 12345");
 
-                while (true) {
-                    Socket clientSocket = serverSocket.accept();
-                    if (clientSocket != null) {
-                        BufferedReader reader = new BufferedReader(new InputStreamReader(clientSocket.getInputStream()));
-                        String staffName = reader.readLine();
-                        System.out.println("0");
-                        // Tạo luồng mới để xử lý client
-                        new Thread(() -> {
-                            try {
-                                TextArea textArea = new TextArea();
-                                textArea.setEditable(false);
-
-                                Tab tab = new Tab(staffName, textArea);
-                                Platform.runLater(() -> tabPane.getTabs().add(tab));
-
-                                // Lắng nghe tin nhắn từ client
-                                listenForMessages(clientSocket, staffName);
-                                System.out.println("1");
-
-                                // Hiển thị lịch sử tin nhắn sau khi lắng nghe tin nhắn từ client
-                                Platform.runLater(() -> displayMessageHistory(staffName));
-
-                                BufferedWriter writer = new BufferedWriter(new OutputStreamWriter(clientSocket.getOutputStream()));
-                                clientWriters.put(staffName, writer);
-                            } catch (IOException e) {
-                                e.printStackTrace();
-                            }
-                        }).start();
+                while (!Thread.currentThread().isInterrupted()) {
+                    try {
+                        Socket clientSocket = serverSocket.accept();
+                        System.out.println("Client connected: " + clientSocket.getInetAddress());
+                        new Thread(() -> handleClient(clientSocket)).start();
+                    } catch (IOException e) {
+                        if (!serverSocket.isClosed()) {
+                            e.printStackTrace();
+                        } else {
+                            System.out.println("Server socket closed.");
+                        }
                     }
                 }
-            } catch (Exception e) {
-                e.printStackTrace();
+            } catch (IOException e) {
+                if (!serverSocket.isClosed()) {
+                    e.printStackTrace();
+                } else {
+                    System.out.println("Server socket closed.");
+                }
             }
         });
         serverThread.start();
-
     }
 
-    private void listenForMessages(Socket clientSocket, String staffName) {
-        new Thread(() -> {
-            try (BufferedReader reader = new BufferedReader(new InputStreamReader(clientSocket.getInputStream()))) {
-                String message;
-                System.out.println("Listening for messages from " + staffName + "...");
-                while ((message = reader.readLine()) != null) {
-                    System.out.println("Received message from " + staffName + ": " + message);
-                    String finalMessage = message;
-                    Platform.runLater(() -> {
-                        TextArea textArea = clientTextAreas.get(staffName);
-                        if (textArea != null) {
-                            textArea.appendText(staffName + ": " + finalMessage + "\n");
-                        }
-                        Message msg = new Message(staffName, "Manager", finalMessage, LocalDateTime.now());
-                        messageHistory.add(msg);
-                        saveMessageToXML();
-                    });
+    private void handleClient(Socket clientSocket) {
+        try (BufferedReader reader = new BufferedReader(new InputStreamReader(clientSocket.getInputStream()))) {
+            String encodedUsername = reader.readLine();
+            String encodedPassword = reader.readLine();
+
+            if (encodedUsername == null || encodedPassword == null) {
+                System.out.println("Client disconnected before sending credentials.");
+                clientSocket.close();
+                return;
+            }
+
+            String username = new String(Base64.getDecoder().decode(encodedUsername), StandardCharsets.UTF_8);
+            String password = new String(Base64.getDecoder().decode(encodedPassword), StandardCharsets.UTF_8);
+
+            if (authenticate(username, password)) {
+                BufferedWriter writer = new BufferedWriter(new OutputStreamWriter(clientSocket.getOutputStream()));
+                writer.write("success\n");
+                writer.flush();
+
+                Platform.runLater(() -> setupClientInterface(clientSocket, username));
+            } else {
+                try (BufferedWriter writer = new BufferedWriter(new OutputStreamWriter(clientSocket.getOutputStream()))) {
+                    writer.write("failure\n");
+                    writer.flush();
                 }
+                clientSocket.close();
+            }
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+    }
+
+    private boolean authenticate(String username, String password) {
+        DatabaseConnection connectNow = new DatabaseConnection();
+        Connection connectDB = connectNow.getConnection();
+
+        String verifyLogin = "SELECT count(1) FROM chat.users WHERE username = ? AND password = ?";
+
+        try {
+            PreparedStatement statement = connectDB.prepareStatement(verifyLogin);
+            statement.setString(1, username);
+            statement.setString(2, password);
+
+            ResultSet queryResult = statement.executeQuery();
+
+            if (queryResult.next() && queryResult.getInt(1) == 1) {
+                return true;
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+        return false;
+    }
+
+    private void setupClientInterface(Socket clientSocket, String username) {
+        TextArea textArea = new TextArea();
+        textArea.setEditable(false);
+
+        Tab tab = new Tab(username, textArea);
+        tabPane.getTabs().add(tab);
+        clientTextAreas.put(username, textArea);
+        displayMessageHistory(username);
+
+        try {
+            BufferedWriter writer = new BufferedWriter(new OutputStreamWriter(clientSocket.getOutputStream()));
+            clientWriters.put(username, writer);
+
+            // Bắt đầu thread lắng nghe tin nhắn từ client
+            new Thread(() -> listenForMessages(clientSocket, username)).start();
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+    }
+
+    private void listenForMessages(Socket clientSocket, String username) {
+        try (BufferedReader reader = new BufferedReader(new InputStreamReader(clientSocket.getInputStream()))) {
+            String message;
+            while ((message = reader.readLine()) != null) {
+                String finalMessage = message;
+                Platform.runLater(() -> {
+                    TextArea textArea = clientTextAreas.get(username);
+                    if (textArea != null) {
+                        textArea.appendText(username + ": " + finalMessage + "\n");
+                    }
+                    Message msg = new Message(username, "Manager", finalMessage, LocalDateTime.now());
+                    messageHistory.add(msg);
+                    saveMessageToXML();
+                });
+            }
+        } catch (IOException e) {
+            // Xử lý khi client ngắt kết nối hoặc gặp lỗi
+            Platform.runLater(() -> handleClientDisconnection(username));
+        }
+    }
+
+    private void handleClientDisconnection(String username) {
+        clientTextAreas.remove(username);
+        BufferedWriter writer = clientWriters.remove(username);
+        if (writer != null) {
+            try {
+                writer.close();
             } catch (IOException e) {
                 e.printStackTrace();
             }
-        }).start();
+        }
+        tabPane.getTabs().removeIf(tab -> tab.getText().equals(username));
+        System.out.println("Client " + username + " disconnected.");
     }
 
     private void sendMessage() {
+        Tab selectedTab = tabPane.getSelectionModel().getSelectedItem();
+        if (selectedTab == null) return;
+
+        String clientName = selectedTab.getText();
+        BufferedWriter writer = clientWriters.get(clientName);
+        if (writer == null) return;
+
         try {
-            Tab selectedTab = tabPane.getSelectionModel().getSelectedItem();
-            if (selectedTab == null) return;
-
-            String clientName = selectedTab.getText();
-            BufferedWriter writer = clientWriters.get(clientName);
-            if (writer == null) return;
-
             String message = chatText.getText();
             if (message.trim().isEmpty()) return;
 
@@ -144,7 +213,6 @@ public class ManagerController {
 
     private void displayMessageHistory(String clientName) {
         TextArea textArea = clientTextAreas.get(clientName);
-        System.out.println("2");
         if (textArea != null) {
             for (Message message : messageHistory) {
                 if (message.getReceiver().equals(clientName) || message.getSender().equals(clientName)) {
@@ -154,31 +222,33 @@ public class ManagerController {
         }
     }
 
-    private void loadMessageHistory() {
-        try {
-            File file = new File(chatHistoryFile);
-            if (file.exists()) {
-                JAXBContext jaxbContext = JAXBContext.newInstance(ChatHistory.class);
-                Unmarshaller jaxbUnmarshaller = jaxbContext.createUnmarshaller();
-                ChatHistory chatHistory = (ChatHistory) jaxbUnmarshaller.unmarshal(file);
-                messageHistory = chatHistory.getMessages();
-            }
-        } catch (JAXBException e) {
-            e.printStackTrace();
-        }
-    }
-
     private void saveMessageToXML() {
         try {
-            JAXBContext jaxbContext = JAXBContext.newInstance(ChatHistory.class);
-            Marshaller marshaller = jaxbContext.createMarshaller();
+            JAXBContext context = JAXBContext.newInstance(ChatHistory.class);
+            Marshaller marshaller = context.createMarshaller();
             marshaller.setProperty(Marshaller.JAXB_FORMATTED_OUTPUT, true);
 
             ChatHistory chatHistory = new ChatHistory();
             chatHistory.setMessages(messageHistory);
 
-            marshaller.marshal(chatHistory, new FileWriter(chatHistoryFile));
-        } catch (Exception e) {
+            marshaller.marshal(chatHistory, new File(chatHistoryFile));
+        } catch (JAXBException e) {
+            e.printStackTrace();
+        }
+    }
+
+    private void loadMessageHistory() {
+        try {
+            File file = new File(chatHistoryFile);
+            if (!file.exists()) return;
+
+            JAXBContext context = JAXBContext.newInstance(ChatHistory.class);
+            Unmarshaller unmarshaller = context.createUnmarshaller();
+
+            ChatHistory chatHistory = (ChatHistory) unmarshaller.unmarshal(file);
+            messageHistory.clear();
+            messageHistory.addAll(chatHistory.getMessages());
+        } catch (JAXBException e) {
             e.printStackTrace();
         }
     }

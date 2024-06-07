@@ -1,6 +1,5 @@
 package com.example.chat;
 
-import com.example.chat.ChatHistory;
 import javafx.application.Platform;
 import javafx.fxml.FXML;
 import javafx.scene.control.Button;
@@ -29,30 +28,26 @@ public class ClientController {
     private BufferedWriter writer;
     private List<Message> messageHistory = new ArrayList<>();
     private final String chatHistoryFile = "chat.xml";
+    private String username;
 
     @FXML
     public void initialize() {
         loadMessageHistory();
-        connectToServer();
+        button.setOnAction(event -> sendMessage());
     }
 
-    private void connectToServer() {
+    public void connectToServer(String username) {
         try {
-            String serverIP = "127.0.0.1";
+            String serverIP = "localhost";
             int serverPort = 12345;
-            String clientName = "ClientName";
 
             clientSocket = new Socket(serverIP, serverPort);
-            if (clientSocket != null) {
+            if (clientSocket != null && !clientSocket.isClosed()) {
                 writer = new BufferedWriter(new OutputStreamWriter(clientSocket.getOutputStream()));
-                writer.write(clientName + "\n");
+                writer.write(username + "\n");
                 writer.flush();
 
                 new Thread(this::listenForMessages).start();
-
-                button.setOnAction(event -> sendMessage(clientName));
-
-                displayMessageHistory(); // Display message history when successfully connected
             }
         } catch (Exception e) {
             e.printStackTrace();
@@ -60,42 +55,51 @@ public class ClientController {
     }
 
     private void listenForMessages() {
-        try {
-            BufferedReader reader = new BufferedReader(new InputStreamReader(clientSocket.getInputStream()));
-            String message;
-            while ((message = reader.readLine()) != null) {
-                String finalMessage = message;
-                Platform.runLater(() -> {
-                    textArea.appendText("Manager: " + finalMessage + "\n");
-                    Message msg = new Message("Manager", "Client", finalMessage, LocalDateTime.now());
-                    messageHistory.add(msg);
-                    saveMessageToXML();
-                });
+        while (true) {  // Thêm vòng lặp vô hạn để duy trì kết nối
+            try {
+                BufferedReader reader = new BufferedReader(new InputStreamReader(clientSocket.getInputStream()));
+                String message;
+                while ((message = reader.readLine()) != null) {
+                    String finalMessage = message;
+                    Platform.runLater(() -> {
+                        textArea.appendText("Manager: " + finalMessage + "\n");
+                        Message msg = new Message("Manager", username, finalMessage, LocalDateTime.now());
+                        messageHistory.add(msg);
+                        saveMessageToXML();
+                    });
+                }
+            } catch (Exception e) {
+                e.printStackTrace();
+                reconnectToServer();  // Thử tái kết nối khi gặp lỗi
             }
-        } catch (Exception e) {
-            e.printStackTrace();
+        }
+    }
+    private void reconnectToServer() {
+        while (true) {
+            try {
+                Thread.sleep(5000);  // Chờ 5 giây trước khi thử lại
+                connectToServer(username);
+                break;  // Thoát vòng lặp nếu kết nối thành công
+            } catch (Exception e) {
+                e.printStackTrace();
+            }
         }
     }
 
-    private void sendMessage(String clientName) {
+
+    private void sendMessage() {
         try {
             String message = textField.getText();
             if (message.trim().isEmpty()) return;
             writer.write(message + "\n");
             writer.flush();
-            textArea.appendText(clientName + ": " + message + "\n");
-            Message msg = new Message(clientName, "Manager", message, LocalDateTime.now());
+            textArea.appendText(username + ": " + message + "\n");
+            Message msg = new Message(username, "Manager", message, LocalDateTime.now());
             messageHistory.add(msg);
             saveMessageToXML();
             textField.clear();
         } catch (Exception e) {
             e.printStackTrace();
-        }
-    }
-
-    private void displayMessageHistory() {
-        for (Message message : messageHistory) {
-            textArea.appendText(message.getSender() + ": " + message.getContent() + "\n");
         }
     }
 
@@ -127,5 +131,15 @@ public class ClientController {
         } catch (Exception e) {
             e.printStackTrace();
         }
+    }
+
+    private void displayMessageHistory() {
+        for (Message msg : messageHistory) {
+            textArea.appendText(msg.getSender() + ": " + msg.getContent() + "\n");
+        }
+    }
+
+    public void setUsername(String username) {
+        this.username = username;
     }
 }

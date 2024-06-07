@@ -11,6 +11,7 @@ module com.example.chat {
     requires eu.hansolo.tilesfx;
     requires com.almasb.fxgl.all;
     requires java.xml.bind;
+    requires java.sql;
 //    requires java.xml.bind;
 
 

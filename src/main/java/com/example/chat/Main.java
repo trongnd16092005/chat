@@ -15,11 +15,13 @@ public class Main extends Application {
         AnchorPane managerPane = managerLoader.load();
         Stage managerStage = new Stage();
         managerStage.setTitle("Manager");
+        managerStage.setX(0);
+        managerStage.setY(0);
         managerStage.setScene(new Scene(managerPane));
         managerStage.show();
 
 //        // Load Client FXML
-//        FXMLLoader clientLoader = new FXMLLoader(getClass().getResource("/com/example/chat/client.fxml"));
+//        FXMLLoader clientLoader = new FXMLLoader(getClass().getResource("/com/example/chat/login.fxml"));
 //        AnchorPane clientPane = clientLoader.load();
 //        Stage clientStage = new Stage();
 //        clientStage.setTitle("Client");
